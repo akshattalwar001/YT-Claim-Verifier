@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Video Claim Checker</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            min-height: 100vh;
+            color: #e4e4e7;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: #111111;
+            border: 1px solid #27272a;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1f1f23 0%, #27272a 100%);
+            padding: 40px 30px;
+            text-align: center;
+            border-bottom: 1px solid #27272a;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #f4f4f5;
+            letter-spacing: -0.025em;
+        }
+
+        .header p {
+            color: #a1a1aa;
+            font-size: 0.95rem;
+            font-weight: 400;
+        }
+
+        .main-content {
+            padding: 40px 30px;
+        }
+
+        .input-section {
+            margin-bottom: 32px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .url-input {
+            flex: 1;
+            padding: 14px 16px;
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 10px;
+            color: #f4f4f5;
+            font-size: 15px;
+            transition: all 0.2s ease;
+        }
+
+        .url-input::placeholder {
+            color: #71717a;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .check-btn {
+            padding: 14px 24px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 140px;
+        }
+
+        .check-btn:hover:not(:disabled) {
+            background: #2563eb;
+            transform: translateY(-1px);
+        }
+
+        .check-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            text-align: center;
+            padding: 16px;
+            border-radius: 10px;
+            margin-bottom: 24px;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .status.loading {
+            background: rgba(251, 191, 36, 0.1);
+            border: 1px solid rgba(251, 191, 36, 0.2);
+            color: #fbbf24;
+        }
+
+        .status.error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .status.success {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+
+        .results {
+            display: none;
+        }
+
+        .video-info {
+            background: #18181b;
+            border: 1px solid #27272a;
+            padding: 24px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+        }
+
+        .video-info h3 {
+            color: #f4f4f5;
+            margin-bottom: 16px;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .video-info p {
+            color: #a1a1aa;
+            margin-bottom: 8px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .video-info a {
+            color: #3b82f6;
+            text-decoration: none;
+        }
+
+        .video-info a:hover {
+            text-decoration: underline;
+        }
+
+        .section {
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .section h3 {
+            color: #f4f4f5;
+            margin-bottom: 16px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-content {
+            line-height: 1.6;
+            color: #d4d4d8;
+            white-space: pre-wrap;
+            background: #0f0f0f;
+            padding: 16px;
+            border-radius: 8px;
+            border-left: 3px solid #3b82f6;
+            font-size: 14px;
+        }
+
+        .formatted-content {
+            line-height: 1.6;
+            color: #d4d4d8;
+            background: #0f0f0f;
+            padding: 16px;
+            border-radius: 8px;
+            border-left: 3px solid #3b82f6;
+            font-size: 14px;
+        }
+
+        .formatted-content h1, .formatted-content h2, .formatted-content h3 {
+            color: #f4f4f5;
+            margin: 16px 0 8px 0;
+            font-weight: 600;
+        }
+
+        .formatted-content h1 { font-size: 18px; }
+        .formatted-content h2 { font-size: 16px; }
+        .formatted-content h3 { font-size: 15px; }
+
+        .formatted-content p {
+            margin: 8px 0;
+        }
+
+        .formatted-content ul, .formatted-content ol {
+            margin: 8px 0;
+            padding-left: 20px;
+        }
+
+        .formatted-content li {
+            margin: 4px 0;
+        }
+
+        .formatted-content strong, .formatted-content b {
+            color: #f4f4f5;
+            font-weight: 600;
+        }
+
+        .formatted-content em, .formatted-content i {
+            color: #a1a1aa;
+            font-style: italic;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #27272a;
+            border-top: 2px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .warning {
+            background: rgba(251, 191, 36, 0.1);
+            border: 1px solid rgba(251, 191, 36, 0.2);
+            color: #fbbf24;
+            padding: 20px;
+            border-radius: 12px;
+            margin-top: 32px;
+            text-align: center;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .warning strong {
+            color: #f59e0b;
+        }
+
+        @media (max-width: 768px) {
+            .input-group {
+                flex-direction: column;
+            }
+
+            .header h1 {
+                font-size: 1.75rem;
+            }
+
+            .main-content {
+                padding: 24px 20px;
+            }
+
+            .header {
+                padding: 32px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>YouTube Claim Checker</h1>
+            <p>AI-powered fact-checking for YouTube video content</p>
+        </div>
+
+        <div class="main-content">
+            <div class="input-section">
+                <div class="input-group">
+                    <input
+                        type="text"
+                        id="videoUrl"
+                        class="url-input"
+                        placeholder="Enter YouTube video URL..."
+                        onkeypress="handleKeyPress(event)"
+                    >
+                    <button onclick="checkClaims()" id="checkBtn" class="check-btn">
+                        Analyze
+                    </button>
+                </div>
+            </div>
+
+            <div id="status"></div>
+
+            <div id="results" class="results">
+                <div class="video-info" id="videoInfo">
+                    <!-- Video info will be populated here -->
+                </div>
+
+                <div class="section">
+                    <h3>Identified Claims</h3>
+                    <div id="claims" class="section-content">
+                        <!-- Claims will be populated here -->
+                    </div>
+                </div>
+
+                <div class="section">
+                    <h3>Fact-Check Results</h3>
+                    <div id="factCheck" class="section-content">
+                        <!-- Fact-check results will be populated here -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="warning">
+                <strong>Note:</strong> This tool analyzes claims from videos before December 2023.
+                AI fact-checking should be verified with additional reliable sources.
+                For research purposes only.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isProcessing = false;
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                checkClaims();
+            }
+        }
+
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = message;
+            statusDiv.className = `status ${type}`;
+            statusDiv.style.display = 'block';
+        }
+
+        function hideStatus() {
+            document.getElementById('status').style.display = 'none';
+        }
+
+        function formatText(text) {
+            // Convert markdown-style formatting to HTML
+            let formatted = text
+                // Convert **text** to <strong>text</strong>
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                // Convert *text* to <em>text</em>
+                .replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, '<em>$1</em>')
+                // Convert newlines to <br> but preserve paragraph structure
+                .replace(/\n\n/g, '</p><p>')
+                .replace(/\n/g, '<br>');
+
+            // Wrap in paragraph tags if not already wrapped
+            if (!formatted.startsWith('<p>')) {
+                formatted = '<p>' + formatted + '</p>';
+            }
+
+            return formatted;
+        }
+
+        function showResults(data) {
+            // Populate video info
+            document.getElementById('videoInfo').innerHTML = `
+                <h3>Video Information</h3>
+                <p><strong>Title:</strong> ${data.video_title}</p>
+                <p><strong>URL:</strong> <a href="${data.video_url}" target="_blank">${data.video_url}</a></p>
+            `;
+
+            // Populate claims with formatting
+            const claimsElement = document.getElementById('claims');
+            claimsElement.innerHTML = formatText(data.claims);
+            claimsElement.className = 'formatted-content';
+
+            // Populate fact-check results with formatting
+            const factCheckElement = document.getElementById('factCheck');
+            factCheckElement.innerHTML = formatText(data.fact_check_results);
+            factCheckElement.className = 'formatted-content';
+
+            // Show results
+            document.getElementById('results').style.display = 'block';
+        }
+
+        function hideResults() {
+            document.getElementById('results').style.display = 'none';
+        }
+
+        async function checkClaims() {
+            const videoUrl = document.getElementById('videoUrl').value.trim();
+            const checkBtn = document.getElementById('checkBtn');
+
+            if (!videoUrl) {
+                showStatus('Please enter a YouTube video URL', 'error');
+                return;
+            }
+
+            if (isProcessing) {
+                return;
+            }
+
+            isProcessing = true;
+            checkBtn.disabled = true;
+            checkBtn.innerHTML = '<span class="spinner"></span> Processing...';
+
+            hideResults();
+            showStatus('Analyzing video claims...', 'loading');
+
+            try {
+                const response = await fetch('/api/check-claims', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        video_url: videoUrl
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus('Analysis complete', 'success');
+                    showResults(data);
+
+                    // Auto-hide success status after 3 seconds
+                    setTimeout(hideStatus, 3000);
+                } else {
+                    showStatus(`Error: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                console.error('Request failed:', error);
+                showStatus('Network error. Please check your connection and try again.', 'error');
+            } finally {
+                isProcessing = false;
+                checkBtn.disabled = false;
+                checkBtn.innerHTML = 'Analyze';
+            }
+        }
+
+        // Check API health on page load
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+
+                if (!data.gemini_configured) {
+                    showStatus('Gemini API key not configured. Please check server configuration.', 'error');
+                }
+            } catch (error) {
+                showStatus('Unable to connect to server. Please check if the backend is running.', 'error');
+            }
+        });
+    </script>
+</body>
+</html>
