@@ -11,7 +11,7 @@ import time
 import random
 from dotenv import load_dotenv
 
-# Load environment variable
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
@@ -29,9 +29,46 @@ else:
     model = genai.GenerativeModel('gemini-1.5-flash')
 
 
-def get_yt_dlp_options(temp_filename):
+def get_yt_dlp_options(temp_filename, attempt=0):
     """Get optimized yt-dlp options to avoid bot detection"""
-    return {
+    
+    # Check if cookies file exists
+    cookies_file = 'cookies.txt'
+    use_cookies = os.path.exists(cookies_file)
+    
+    # Different strategies for different attempts
+    strategies = [
+        # Strategy 1: Use cookies + web client
+        {
+            'player_client': ['web'],
+            'use_cookies': use_cookies,
+        },
+        # Strategy 2: Use cookies + tv_embedded
+        {
+            'player_client': ['tv_embedded'],
+            'use_cookies': use_cookies,
+        },
+        # Strategy 3: Use cookies + android
+        {
+            'player_client': ['android'],
+            'use_cookies': use_cookies,
+        },
+        # Strategy 4: No cookies, web only
+        {
+            'player_client': ['web'],
+            'use_cookies': False,
+        },
+        # Strategy 5: Browser extraction (fallback)
+        {
+            'player_client': ['web', 'tv_embedded'],
+            'use_cookies': False,
+            'use_browser': True,
+        }
+    ]
+    
+    strategy = strategies[min(attempt, len(strategies) - 1)]
+    
+    options = {
         'writesubtitles': True,
         'writeautomaticsub': True,
         'subtitleslangs': ['en', 'en-US', 'en-GB'],
@@ -41,8 +78,8 @@ def get_yt_dlp_options(temp_filename):
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'extractor_args': {
             'youtube': {
-                'player_client': ['web', 'tv_embedded', 'android'],
-                'player_skip': ['webpage']
+                'player_client': strategy['player_client'],
+                'player_skip': ['configs', 'webpage'] if attempt > 2 else ['webpage']
             }
         },
         'http_headers': {
@@ -54,15 +91,34 @@ def get_yt_dlp_options(temp_filename):
             'Upgrade-Insecure-Requests': '1',
         },
         'sleep_interval': 1,
-        'max_sleep_interval': 3,
+        'max_sleep_interval': 5,
         'ignoreerrors': False,
         'no_warnings': False,
         'extract_flat': False,
     }
+    
+    # Add cookies if available and strategy allows
+    if strategy['use_cookies'] and use_cookies:
+        options['cookiefile'] = cookies_file
+        print(f"🍪 Using cookies from {cookies_file}")
+    
+    # Try browser cookie extraction as fallback
+    if strategy.get('use_browser') and not use_cookies:
+        try:
+            options['cookiesfrombrowser'] = ('chrome',)
+            print("🌐 Attempting to extract cookies from Chrome browser")
+        except:
+            try:
+                options['cookiesfrombrowser'] = ('firefox',)
+                print("🦊 Attempting to extract cookies from Firefox browser")
+            except:
+                pass
+    
+    return options
 
 
-def extract_subtitles(url, max_retries=3):
-    """Extract subtitles from YouTube video with retry logic"""
+def extract_subtitles(url, max_retries=5):
+    """Extract subtitles from YouTube video with multiple strategies"""
     print("🚀 Extracting subtitles...")
 
     # Create unique temp filename
@@ -71,13 +127,14 @@ def extract_subtitles(url, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            # Add random delay between attempts
+            # Progressive delay between attempts
             if attempt > 0:
-                delay = random.uniform(2, 5)
-                print(f"⏳ Retry attempt {attempt + 1}, waiting {delay:.1f}s...")
+                delay = min(2 ** attempt, 10)  # Exponential backoff, max 10s
+                print(f"⏳ Retry attempt {attempt + 1}/{max_retries}, waiting {delay}s...")
                 time.sleep(delay)
 
-            options = get_yt_dlp_options(temp_filename)
+            options = get_yt_dlp_options(temp_filename, attempt)
+            print(f"🔧 Using strategy {attempt + 1}: {options['extractor_args']['youtube']['player_client']}")
             
             with yt_dlp.YoutubeDL(options) as ydl:
                 print(f"📥 Extracting video info (attempt {attempt + 1})...")
@@ -118,8 +175,11 @@ def extract_subtitles(url, max_retries=3):
                 print(f"✅ Successfully extracted {len(text)} characters of subtitles")
                 return video_title, text
             else:
-                print("❌ No subtitle files found")
-                return None, "No subtitles found for this video"
+                print("❌ No subtitle files found in this attempt")
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    return None, "No subtitles found for this video after trying all strategies"
 
         except yt_dlp.utils.DownloadError as e:
             error_msg = str(e)
@@ -127,11 +187,14 @@ def extract_subtitles(url, max_retries=3):
             
             if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
                 if attempt < max_retries - 1:
-                    print("🤖 Bot detection triggered, trying different approach...")
+                    print("🤖 Bot detection triggered, trying different strategy...")
                     continue
                 else:
-                    return None, "YouTube is blocking requests due to bot detection. Try using a different video or implementing cookie authentication."
+                    return None, create_cookie_setup_message()
             
+            if "Private video" in error_msg or "Video unavailable" in error_msg:
+                return None, f"Video is not accessible: {error_msg}"
+                
             if attempt == max_retries - 1:
                 return None, f"Failed to extract subtitles after {max_retries} attempts: {error_msg}"
                 
@@ -141,6 +204,32 @@ def extract_subtitles(url, max_retries=3):
                 return None, f"Unexpected error: {str(e)}"
 
     return None, f"Failed to extract subtitles after {max_retries} attempts"
+
+
+def create_cookie_setup_message():
+    """Create a helpful message for setting up cookies"""
+    return """YouTube is blocking requests due to bot detection. To fix this, you need to set up cookie authentication:
+
+**Method 1: Browser Cookie File**
+1. Install a browser extension like "Get cookies.txt LOCALLY" for Chrome/Firefox
+2. Visit YouTube.com while logged in
+3. Use the extension to export cookies to a file named 'cookies.txt'
+4. Place the cookies.txt file in the same directory as this script
+
+**Method 2: Manual Cookie Setup**
+1. Visit YouTube in your browser while logged in
+2. Open Developer Tools (F12) → Network tab
+3. Refresh the page and find any request to youtube.com
+4. Copy the 'Cookie' header value
+5. Create a cookies.txt file with the proper Netscape format
+
+**Method 3: Try a Different Video**
+Some videos may work without cookies. Try videos from:
+- Educational channels (Khan Academy, Crash Course)
+- Popular content creators with public content
+- Videos that are not age-restricted or region-locked
+
+The system will automatically use browser cookies if cookies.txt is not found."""
 
 
 def extract_claims(text, video_title):
@@ -298,9 +387,20 @@ if __name__ == '__main__':
     print("🚀 Starting Flask server...")
     print("📝 Server will be available at: http://localhost:5000")
     print("🔧 Tips for YouTube bot detection issues:")
-    print("   - Try different videos if one fails")
-    print("   - The system will retry failed requests automatically")
-    print("   - Consider implementing cookie authentication for persistent issues")
+    print("   - Place a 'cookies.txt' file in this directory for best results")
+    print("   - The system will try multiple extraction strategies automatically")
+    print("   - Try educational or public videos if others fail")
+    print("   - System will attempt to use browser cookies as fallback")
+    
+    # Check for cookies file
+    if os.path.exists('cookies.txt'):
+        print("✅ Found cookies.txt file - should help with bot detection")
+    else:
+        print("⚠️  No cookies.txt found - may encounter bot detection issues")
+        print("💡 To create cookies.txt:")
+        print("   1. Install 'Get cookies.txt LOCALLY' browser extension")
+        print("   2. Visit YouTube while logged in")
+        print("   3. Export cookies to 'cookies.txt' in this directory")
     
     app.run(debug=True, host='0.0.0.0', port=5000)
 
