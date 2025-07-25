@@ -11,7 +11,7 @@ import time
 import random
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variable
 load_dotenv()
 
 app = Flask(__name__)
