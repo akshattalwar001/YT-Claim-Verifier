@@ -4,11 +4,14 @@ import yt_dlp
 import google.generativeai as genai
 import os
 import re
+from pathlib import Path
 import tempfile
 import uuid
 from dotenv import load_dotenv
+import requests
+from urllib.parse import urlparse, parse_qs
 import time
-import random
+import json
 
 # Load environment variables
 load_dotenv()
@@ -28,152 +31,219 @@ else:
     model = genai.GenerativeModel('gemini-1.5-flash')
 
 
-def extract_subtitles(url):
-    """Extract subtitles from YouTube video using /tmp directory"""
-    print("🚀 Extracting subtitles...")
+def extract_video_id(url):
+    """Extract YouTube video ID from URL"""
+    parsed_url = urlparse(url)
 
-    # Use /tmp directory which is writable on Render
-    temp_dir = '/tmp'
+    if parsed_url.hostname in ['youtu.be']:
+        return parsed_url.path[1:]
+    elif parsed_url.hostname in ['www.youtube.com', 'youtube.com', 'm.youtube.com']:
+        if parsed_url.path == '/watch':
+            return parse_qs(parsed_url.query)['v'][0]
+        elif parsed_url.path.startswith('/embed/'):
+            return parsed_url.path.split('/')[2]
+        elif parsed_url.path.startswith('/v/'):
+            return parsed_url.path.split('/')[2]
+
+    return None
+
+
+def extract_subtitles_ytdlp_robust(url):
+    """Extract subtitles using yt-dlp with multiple robust configurations"""
+    print("🔧 Trying yt-dlp with robust settings...")
+
+    # Create unique temp filename
     temp_id = str(uuid.uuid4())[:8]
-    temp_filename = os.path.join(temp_dir, f'temp_subtitle_{temp_id}')
+    temp_filename = f'temp_subtitle_{temp_id}'
 
-    # Enhanced options to avoid bot detection
-    options = {
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['en'],
-        'subtitlesformat': 'srt',
-        'outtmpl': f'{temp_filename}.%(ext)s',
-        'skip_download': True,
-        # Bot detection workarounds
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'referer': 'https://www.youtube.com/',
-        'sleep_interval': 1,
-        'max_sleep_interval': 5,
-        'sleep_interval_subtitles': 1,
-        # Reduce requests
-        'extract_flat': False,
-        'no_warnings': True,
-        # Timeout settings
-        'socket_timeout': 30,
-        # Additional headers
-        'http_headers': {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
+    # Multiple configurations to try - ordered from most to least likely to work on servers
+    configs = [
+        # Configuration 1: Android mobile client (often bypasses server restrictions)
+        {
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['en', 'en-US', 'en-GB'],
+            'subtitlesformat': 'vtt',  # VTT format is more reliable
+            'outtmpl': f'{temp_filename}.%(ext)s',
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                    'skip': ['hls', 'dash']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+        },
+
+        # Configuration 2: iOS client
+        {
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['en'],
+            'subtitlesformat': 'vtt',
+            'outtmpl': f'{temp_filename}.%(ext)s',
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'com.google.ios.youtube/17.31.4 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
+            }
+        },
+
+        # Configuration 3: Web client with residential-like headers
+        {
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['en'],
+            'subtitlesformat': 'srt',
+            'outtmpl': f'{temp_filename}.%(ext)s',
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Referer': 'https://www.youtube.com/',
+            }
+        },
+
+        # Configuration 4: Basic fallback
+        {
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['en'],
+            'subtitlesformat': 'srt',
+            'outtmpl': f'{temp_filename}.%(ext)s',
+            'skip_download': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
         }
-    }
+    ]
 
-    max_retries = 3
-    for attempt in range(max_retries):
+    video_title = "Unknown Video"
+
+    for i, options in enumerate(configs):
         try:
-            print(f"🔄 Attempt {attempt + 1}/{max_retries}")
-            print(f"📁 Using temp directory: {temp_dir}")
-            
-            # Check if /tmp is writable
-            if not os.access(temp_dir, os.W_OK):
-                return None, f"Cannot write to {temp_dir} directory"
-            
-            # Random delay to avoid rate limiting
-            if attempt > 0:
-                delay = random.uniform(2, 5)
-                print(f"⏳ Waiting {delay:.1f}s before retry...")
-                time.sleep(delay)
+            print(f"  🔄 Trying configuration {i + 1}/{len(configs)}...")
 
             with yt_dlp.YoutubeDL(options) as ydl:
-                # First, just get video info without downloading
-                info = ydl.extract_info(url, download=False)
-                video_title = info.get('title', 'Unknown')
-                
-                # Check if subtitles are available
-                subtitles = info.get('subtitles', {})
-                auto_subtitles = info.get('automatic_captions', {})
-                
-                if not subtitles.get('en') and not auto_subtitles.get('en'):
-                    return None, "No English subtitles available for this video"
-                
-                print(f"📹 Video: {video_title}")
-                print("⬇️ Downloading subtitles...")
-                
-                # Now download subtitles
+                # First try to get video info
+                try:
+                    info = ydl.extract_info(url, download=False)
+                    video_title = info.get('title', 'Unknown Video')
+                    print(f"  📹 Video: {video_title}")
+                except Exception as info_error:
+                    print(f"  ⚠️ Could not get video info: {info_error}")
+
+                # Try to download subtitles
                 ydl.download([url])
 
-            # Look for subtitle file
-            subtitle_file = f"{temp_filename}.en.srt"
-            print(f"🔍 Looking for subtitle file: {subtitle_file}")
-            
-            if os.path.exists(subtitle_file):
-                print("✅ Subtitle file found!")
-                with open(subtitle_file, "r", encoding="utf-8") as f:
-                    content = f.read()
+            # Look for subtitle files (try different extensions)
+            subtitle_extensions = ['en.vtt', 'en.srt', 'en-US.vtt', 'en-US.srt', 'en-GB.vtt', 'en-GB.srt']
 
-                # Clean SRT format (remove timestamps and numbers)
-                text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', content)
-                text = re.sub(r'\n+', ' ', text).strip()
+            for ext in subtitle_extensions:
+                subtitle_file = f"{temp_filename}.{ext}"
+                if os.path.exists(subtitle_file):
+                    print(f"  ✅ Found subtitle file: {subtitle_file}")
 
-                # Clean up temp file
-                try:
-                    os.remove(subtitle_file)
-                    print("🧹 Cleaned up temp file")
-                except Exception as cleanup_error:
-                    print(f"⚠️ Could not clean up temp file: {cleanup_error}")
+                    with open(subtitle_file, "r", encoding="utf-8") as f:
+                        content = f.read()
 
-                if not text or len(text) < 50:
-                    return None, "Subtitles too short or empty"
+                    # Clean subtitle content based on format
+                    if ext.endswith('.vtt'):
+                        # Clean VTT format
+                        lines = content.split('\n')
+                        text_lines = []
+                        for line in lines:
+                            line = line.strip()
+                            # Skip VTT headers, timestamps, and empty lines
+                            if (line and
+                                    not line.startswith('WEBVTT') and
+                                    not line.startswith('NOTE') and
+                                    '-->' not in line and
+                                    not line.isdigit()):
+                                text_lines.append(line)
+                        text = ' '.join(text_lines)
+                    else:
+                        # Clean SRT format
+                        text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', content)
+                        text = re.sub(r'\n+', ' ', text).strip()
 
-                print(f"📝 Extracted {len(text)} characters of text")
-                return video_title, text
-            else:
-                print("❌ Subtitle file not found")
-                # List files in temp directory for debugging
-                try:
-                    temp_files = os.listdir(temp_dir)
-                    matching_files = [f for f in temp_files if temp_id in f]
-                    print(f"🔍 Files with temp_id {temp_id}: {matching_files}")
-                except Exception as e:
-                    print(f"❌ Could not list temp directory: {e}")
-                
-                if attempt == max_retries - 1:
-                    return None, "Subtitle file not created - video may not have subtitles"
-                continue
+                    # Clean up temp file
+                    try:
+                        os.remove(subtitle_file)
+                    except:
+                        pass
 
-        except yt_dlp.utils.DownloadError as e:
-            error_msg = str(e)
-            print(f"❌ Download error (attempt {attempt + 1}): {error_msg}")
-            
-            if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
-                print("🤖 Bot detection triggered, trying different strategy...")
-                # Try with different user agent
-                options['user_agent'] = f'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KTML, like Gecko) Chrome/{90 + attempt}.0.{4400 + attempt * 10}.{100 + attempt * 5} Safari/537.36'
-                
-            if attempt == max_retries - 1:
-                return None, f"Failed after {max_retries} attempts: {error_msg}"
-                
+                    if text and len(text) > 50:  # Ensure we have substantial content
+                        print(f"  ✅ Successfully extracted {len(text)} characters")
+                        return video_title, text
+
+            print(f"  ❌ No subtitle files found for configuration {i + 1}")
+
+            # Wait between attempts to avoid being flagged
+            if i < len(configs) - 1:
+                time.sleep(2)
+
         except Exception as e:
-            print(f"❌ Unexpected error (attempt {attempt + 1}): {e}")
-            if attempt == max_retries - 1:
-                return None, f"Unexpected error: {str(e)}"
+            print(f"  ❌ Configuration {i + 1} failed: {e}")
+            continue
 
-    return None, "Failed to extract subtitles after all attempts"
+    return None, "All yt-dlp configurations failed. The video may not have subtitles or server access is restricted."
+
+
+def extract_subtitles(url):
+    """Extract subtitles with robust yt-dlp configurations"""
+    print("🚀 Extracting subtitles...")
+
+    # Extract video ID for validation
+    video_id = extract_video_id(url)
+    if not video_id:
+        return None, "Invalid YouTube URL"
+
+    print(f"📹 Video ID: {video_id}")
+
+    # Use robust yt-dlp extraction
+    try:
+        video_title, transcript = extract_subtitles_ytdlp_robust(url)
+        if transcript and video_title and len(transcript) > 50:
+            print("✅ Success with yt-dlp")
+            return video_title, transcript
+        else:
+            return None, "Could not extract meaningful transcript content"
+    except Exception as e:
+        print(f"❌ yt-dlp failed: {e}")
+        return None, f"Extraction failed: {str(e)}"
 
 
 def extract_claims(text, video_title):
     """Extract factual claims from video text using Gemini"""
     print("🔍 Extracting claims...")
 
-    # Limit text to avoid memory issues and API limits
-    max_text_length = 3000
-    if len(text) > max_text_length:
-        text = text[:max_text_length] + "..."
-
     prompt = f"""
     Analyze this video transcript and extract the main factual claims that can be fact-checked.
 
     Video Title: {video_title}
 
-    Transcript: {text}
+    Transcript: {text[:4000]}  # Limit to avoid token limits
 
     Please:
     1. Identify 3-5 key factual claims made in the video
@@ -230,12 +300,9 @@ def index():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    temp_writable = os.access('/tmp', os.W_OK)
     return jsonify({
         'status': 'healthy',
-        'gemini_configured': bool(GEMINI_API_KEY),
-        'temp_directory_writable': temp_writable,
-        'temp_directory': '/tmp'
+        'gemini_configured': bool(GEMINI_API_KEY)
     })
 
 
@@ -252,18 +319,12 @@ def check_claims():
         if not GEMINI_API_KEY:
             return jsonify({'error': 'Gemini API key not configured'}), 500
 
-        # Check if /tmp is writable
-        if not os.access('/tmp', os.W_OK):
-            return jsonify({'error': 'Temporary directory not writable on this server'}), 500
-
         # Step 1: Extract subtitles
         video_title, transcript = extract_subtitles(video_url)
 
-        if not transcript:
-            return jsonify({'error': 'Could not extract subtitles from video'}), 400
-
-        if video_title is None:  # Error case
-            return jsonify({'error': transcript}), 400
+        if not transcript or not video_title:
+            error_msg = transcript if transcript else 'Could not extract subtitles from video'
+            return jsonify({'error': error_msg}), 400
 
         # Step 2: Extract claims
         claims = extract_claims(transcript, video_title)
@@ -293,11 +354,8 @@ def check_claims():
 
 
 if __name__ == '__main__':
-    # Create templates directory if it doesn't exist (this will only work locally)
-    try:
-        os.makedirs('templates', exist_ok=True)
-    except:
-        pass  # Ignore on read-only filesystem
+    # Create templates directory if it doesn't exist
+    os.makedirs('templates', exist_ok=True)
 
     print("🎥 YouTube Video Claim Checker - Flask Backend")
     print("=" * 50)
@@ -309,14 +367,8 @@ if __name__ == '__main__':
     else:
         print("✅ Gemini API configured")
 
-    # Check temp directory
-    if os.access('/tmp', os.W_OK):
-        print("✅ /tmp directory is writable")
-    else:
-        print("❌ /tmp directory is not writable")
-
     print("🚀 Starting Flask server...")
-    
-    # Use Render's assigned port or default to 5000 for local
-    port = int(os.environ.get('PORT', 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(debug=True, host='0.0.0.0', port=5000)
+
+# Installation requirements:
+# pip install flask flask-cors yt-dlp google-generativeai python-dotenv
