@@ -4,12 +4,10 @@ import yt_dlp
 import google.generativeai as genai
 import os
 import re
-from pathlib import Path
-import tempfile
-import uuid
+import io
+from dotenv import load_dotenv
 import time
 import random
-from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
@@ -22,248 +20,163 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 if not GEMINI_API_KEY:
     print("❌ GEMINI_API_KEY not found in environment variables")
-    print("🔑 Please create a .env file with: GEMINI_API_KEY=your_api_key_here")
 else:
-    # Initialize Gemini
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
 
 
-def get_yt_dlp_options(temp_filename, attempt=0):
-    """Get optimized yt-dlp options to avoid bot detection"""
+class InMemoryLogger:
+    """Custom logger to capture yt-dlp output in memory"""
+    def __init__(self):
+        self.subtitles = None
+        self.error = None
     
-    # Check if cookies file exists
-    cookies_file = 'cookies.txt'
-    use_cookies = os.path.exists(cookies_file)
+    def debug(self, msg):
+        pass
     
-    # Different strategies for different attempts
-    strategies = [
-        # Strategy 1: Use cookies + web client
-        {
-            'player_client': ['web'],
-            'use_cookies': use_cookies,
-        },
-        # Strategy 2: Use cookies + tv_embedded
-        {
-            'player_client': ['tv_embedded'],
-            'use_cookies': use_cookies,
-        },
-        # Strategy 3: Use cookies + android
-        {
-            'player_client': ['android'],
-            'use_cookies': use_cookies,
-        },
-        # Strategy 4: No cookies, web only
-        {
-            'player_client': ['web'],
-            'use_cookies': False,
-        },
-        # Strategy 5: Browser extraction (fallback)
-        {
-            'player_client': ['web', 'tv_embedded'],
-            'use_cookies': False,
-            'use_browser': True,
-        }
-    ]
+    def info(self, msg):
+        pass
     
-    strategy = strategies[min(attempt, len(strategies) - 1)]
+    def warning(self, msg):
+        pass
+    
+    def error(self, msg):
+        self.error = msg
+
+
+def extract_subtitles_memory(url):
+    """Extract subtitles using yt-dlp without writing to disk"""
+    print("🚀 Extracting subtitles (in-memory)...")
+    
+    # Custom hook to capture subtitle data
+    subtitle_data = {}
+    
+    def subtitle_hook(d):
+        if d['status'] == 'finished':
+            subtitle_data['file'] = d['filename']
     
     options = {
         'writesubtitles': True,
         'writeautomaticsub': True,
-        'subtitleslangs': ['en', 'en-US', 'en-GB'],
+        'subtitleslangs': ['en'],
         'subtitlesformat': 'srt',
-        'outtmpl': f'{temp_filename}.%(ext)s',
         'skip_download': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'extractor_args': {
-            'youtube': {
-                'player_client': strategy['player_client'],
-                'player_skip': ['configs', 'webpage'] if attempt > 2 else ['webpage']
-            }
-        },
-        'http_headers': {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        },
+        'no_warnings': True,
+        'quiet': True,
+        # Try to avoid bot detection
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'referer': 'https://www.youtube.com/',
         'sleep_interval': 1,
-        'max_sleep_interval': 5,
-        'ignoreerrors': False,
-        'no_warnings': False,
-        'extract_flat': False,
+        'http_headers': {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+        }
     }
     
-    # Add cookies if available and strategy allows
-    if strategy['use_cookies'] and use_cookies:
-        options['cookiefile'] = cookies_file
-        print(f"🍪 Using cookies from {cookies_file}")
-    
-    # Try browser cookie extraction as fallback
-    if strategy.get('use_browser') and not use_cookies:
-        try:
-            options['cookiesfrombrowser'] = ('chrome',)
-            print("🌐 Attempting to extract cookies from Chrome browser")
-        except:
-            try:
-                options['cookiesfrombrowser'] = ('firefox',)
-                print("🦊 Attempting to extract cookies from Firefox browser")
-            except:
-                pass
-    
-    return options
-
-
-def extract_subtitles(url, max_retries=5):
-    """Extract subtitles from YouTube video with multiple strategies"""
-    print("🚀 Extracting subtitles...")
-
-    # Create unique temp filename
-    temp_id = str(uuid.uuid4())[:8]
-    temp_filename = f'temp_subtitle_{temp_id}'
-
+    max_retries = 3
     for attempt in range(max_retries):
         try:
-            # Progressive delay between attempts
+            print(f"🔄 Attempt {attempt + 1}/{max_retries}")
+            
             if attempt > 0:
-                delay = min(2 ** attempt, 10)  # Exponential backoff, max 10s
-                print(f"⏳ Retry attempt {attempt + 1}/{max_retries}, waiting {delay}s...")
+                delay = random.uniform(1, 3)
                 time.sleep(delay)
-
-            options = get_yt_dlp_options(temp_filename, attempt)
-            print(f"🔧 Using strategy {attempt + 1}: {options['extractor_args']['youtube']['player_client']}")
             
             with yt_dlp.YoutubeDL(options) as ydl:
-                print(f"📥 Extracting video info (attempt {attempt + 1})...")
+                # Extract video info first
                 info = ydl.extract_info(url, download=False)
                 video_title = info.get('title', 'Unknown')
                 
-                print(f"📝 Downloading subtitles for: {video_title}")
-                ydl.download([url])
-
-            # Look for subtitle files with different naming patterns
-            subtitle_files = [
-                f"{temp_filename}.en.srt",
-                f"{temp_filename}.en-US.srt",
-                f"{temp_filename}.en-GB.srt",
-            ]
-            
-            subtitle_content = None
-            subtitle_file_found = None
-            
-            for subtitle_file in subtitle_files:
-                if os.path.exists(subtitle_file):
-                    subtitle_file_found = subtitle_file
-                    with open(subtitle_file, "r", encoding="utf-8") as f:
-                        subtitle_content = f.read()
-                    break
-
-            if subtitle_content:
-                # Clean SRT format (remove timestamps and numbers)
-                text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', subtitle_content)
-                text = re.sub(r'\n+', ' ', text).strip()
-                text = re.sub(r'<[^>]+>', '', text)  # Remove HTML tags
-                text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
-
-                # Clean up temp file
-                if subtitle_file_found:
-                    os.remove(subtitle_file_found)
-
-                print(f"✅ Successfully extracted {len(text)} characters of subtitles")
-                return video_title, text
-            else:
-                print("❌ No subtitle files found in this attempt")
-                if attempt < max_retries - 1:
-                    continue
-                else:
-                    return None, "No subtitles found for this video after trying all strategies"
-
-        except yt_dlp.utils.DownloadError as e:
-            error_msg = str(e)
-            print(f"❌ Download error (attempt {attempt + 1}): {error_msg}")
-            
-            if "Sign in to confirm" in error_msg or "bot" in error_msg.lower():
-                if attempt < max_retries - 1:
-                    print("🤖 Bot detection triggered, trying different strategy...")
-                    continue
-                else:
-                    return None, create_cookie_setup_message()
-            
-            if "Private video" in error_msg or "Video unavailable" in error_msg:
-                return None, f"Video is not accessible: {error_msg}"
+                # Check for subtitles in video info
+                subtitles = info.get('subtitles', {})
+                auto_subtitles = info.get('automatic_captions', {})
                 
-            if attempt == max_retries - 1:
-                return None, f"Failed to extract subtitles after {max_retries} attempts: {error_msg}"
+                subtitle_text = None
                 
+                # Try manual subtitles first
+                if 'en' in subtitles:
+                    subtitle_url = subtitles['en'][0]['url']
+                    subtitle_text = download_subtitle_url(subtitle_url)
+                
+                # Fall back to auto-generated
+                elif 'en' in auto_subtitles:
+                    # Try different variants of English
+                    for lang_variant in ['en', 'en-US', 'en-GB']:
+                        if lang_variant in auto_subtitles:
+                            subtitle_url = auto_subtitles[lang_variant][0]['url']
+                            subtitle_text = download_subtitle_url(subtitle_url)
+                            if subtitle_text:
+                                break
+                
+                if subtitle_text:
+                    # Clean the subtitle text
+                    clean_text = clean_srt_text(subtitle_text)
+                    return video_title, clean_text
+                else:
+                    if attempt == max_retries - 1:
+                        return None, "No subtitles found for this video"
+                        
         except Exception as e:
-            print(f"❌ Unexpected error (attempt {attempt + 1}): {e}")
+            print(f"❌ Error (attempt {attempt + 1}): {e}")
+            if "Sign in to confirm" in str(e) or "bot" in str(e).lower():
+                print("🤖 Bot detection - trying different approach")
+                options['user_agent'] = f'Mozilla/5.0 (X11; Linux x86_64) Chrome/{90 + attempt}.0.{4400 + attempt * 10}.{100 + attempt * 5}'
+            
             if attempt == max_retries - 1:
-                return None, f"Unexpected error: {str(e)}"
+                return None, f"Failed after {max_retries} attempts: {str(e)}"
+    
+    return None, "Failed to extract subtitles"
 
-    return None, f"Failed to extract subtitles after {max_retries} attempts"
+
+def download_subtitle_url(url):
+    """Download subtitle content from URL"""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url) as response:
+            return response.read().decode('utf-8')
+    except Exception as e:
+        print(f"❌ Error downloading subtitle: {e}")
+        return None
 
 
-def create_cookie_setup_message():
-    """Create a helpful message for setting up cookies"""
-    return """YouTube is blocking requests due to bot detection. To fix this, you need to set up cookie authentication:
-
-**Method 1: Browser Cookie File**
-1. Install a browser extension like "Get cookies.txt LOCALLY" for Chrome/Firefox
-2. Visit YouTube.com while logged in
-3. Use the extension to export cookies to a file named 'cookies.txt'
-4. Place the cookies.txt file in the same directory as this script
-
-**Method 2: Manual Cookie Setup**
-1. Visit YouTube in your browser while logged in
-2. Open Developer Tools (F12) → Network tab
-3. Refresh the page and find any request to youtube.com
-4. Copy the 'Cookie' header value
-5. Create a cookies.txt file with the proper Netscape format
-
-**Method 3: Try a Different Video**
-Some videos may work without cookies. Try videos from:
-- Educational channels (Khan Academy, Crash Course)
-- Popular content creators with public content
-- Videos that are not age-restricted or region-locked
-
-The system will automatically use browser cookies if cookies.txt is not found."""
+def clean_srt_text(srt_content):
+    """Clean SRT subtitle format to plain text"""
+    # Remove subtitle numbers and timestamps
+    text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', srt_content)
+    # Remove extra newlines and clean up
+    text = re.sub(r'\n+', ' ', text).strip()
+    # Remove HTML-like tags that sometimes appear in subtitles
+    text = re.sub(r'<[^>]+>', '', text)
+    return text
 
 
 def extract_claims(text, video_title):
     """Extract factual claims from video text using Gemini"""
     print("🔍 Extracting claims...")
-
-    # Truncate text if too long (Gemini has token limits)
-    max_chars = 8000
-    if len(text) > max_chars:
-        text = text[:max_chars] + "..."
-        print(f"📝 Truncated transcript to {max_chars} characters")
+    
+    max_text_length = 3000
+    if len(text) > max_text_length:
+        text = text[:max_text_length] + "..."
 
     prompt = f"""
     Analyze this video transcript and extract the main factual claims that can be fact-checked.
 
     Video Title: {video_title}
-
     Transcript: {text}
 
     Please:
     1. Identify 3-5 key factual claims made in the video
-    2. Focus on specific, verifiable statements (numbers, dates, scientific facts, historical events, statistics)
+    2. Focus on specific, verifiable statements (numbers, dates, scientific facts, historical events)
     3. Ignore opinions, predictions, or subjective statements
-    4. Format as a numbered list with clear, concise claims
+    4. Format as a numbered list
 
     Example format:
     1. [Specific factual claim from the video]
-    2. [Another factual claim with numbers/dates if mentioned]
-    3. [Scientific or historical fact mentioned]
+    2. [Another factual claim]
     """
 
     try:
         response = model.generate_content(prompt)
-        print("✅ Claims extracted successfully")
         return response.text
     except Exception as e:
         print(f"❌ Error extracting claims: {e}")
@@ -275,24 +188,22 @@ def fact_check_claims(claims):
     print("✅ Fact-checking claims...")
 
     prompt = f"""
-    Please fact-check these claims from a YouTube video. For each claim, provide a thorough analysis:
+    Please fact-check these claims from a YouTube video. For each claim:
+    1. Assess if it's TRUE, FALSE, or PARTIALLY TRUE/MISLEADING
+    2. Provide a brief explanation with reasoning
+    3. If possible, mention reliable sources
 
     Claims to check:
     {claims}
 
-    For each claim, provide:
-    **Claim [Number]: [Restate the claim]**
-    * **Status:** TRUE/FALSE/PARTIALLY TRUE/UNCLEAR
-    * **Explanation:** [Detailed factual explanation with reasoning]
-    * **Confidence:** High/Medium/Low
-
-    Use reliable sources and current knowledge. If a claim cannot be verified, mark it as UNCLEAR and explain why.
-    Format your response with clear markdown formatting using ** for bold text.
+    Format your response clearly for each claim with:
+    - Status: [TRUE/FALSE/PARTIALLY TRUE]
+    - Explanation: [Brief factual explanation]
+    - Confidence: [High/Medium/Low]
     """
 
     try:
         response = model.generate_content(prompt)
-        print("✅ Fact-checking completed successfully")
         return response.text
     except Exception as e:
         print(f"❌ Error fact-checking: {e}")
@@ -310,7 +221,8 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'gemini_configured': bool(GEMINI_API_KEY)
+        'gemini_configured': bool(GEMINI_API_KEY),
+        'processing_mode': 'in-memory'
     })
 
 
@@ -327,21 +239,14 @@ def check_claims():
         if not GEMINI_API_KEY:
             return jsonify({'error': 'Gemini API key not configured'}), 500
 
-        # Validate YouTube URL
-        if 'youtube.com/watch' not in video_url and 'youtu.be/' not in video_url:
-            return jsonify({'error': 'Please provide a valid YouTube video URL'}), 400
+        # Step 1: Extract subtitles (in-memory)
+        video_title, transcript = extract_subtitles_memory(video_url)
 
-        print(f"🎥 Processing video: {video_url}")
+        if not transcript:
+            return jsonify({'error': 'Could not extract subtitles from video'}), 400
 
-        # Step 1: Extract subtitles
-        video_title, transcript = extract_subtitles(video_url)
-
-        if not transcript or video_title is None:
-            error_msg = transcript if transcript else 'Could not extract subtitles from video'
-            return jsonify({'error': error_msg}), 400
-
-        if len(transcript.strip()) < 100:
-            return jsonify({'error': 'Video transcript is too short or empty. This video may not have subtitles available.'}), 400
+        if video_title is None:
+            return jsonify({'error': transcript}), 400
 
         # Step 2: Extract claims
         claims = extract_claims(transcript, video_title)
@@ -371,38 +276,14 @@ def check_claims():
 
 
 if __name__ == '__main__':
-    # Create templates directory if it doesn't exist
-    os.makedirs('templates', exist_ok=True)
-
-    print("🎥 YouTube Video Claim Checker - Flask Backend")
+    print("🎥 YouTube Video Claim Checker - In-Memory Processing")
     print("=" * 50)
 
     if not GEMINI_API_KEY:
-        print("❌ Please create a .env file with your Gemini API key:")
-        print("GEMINI_API_KEY=your_api_key_here")
-        print("🔑 Get your API key from: https://makersuite.google.com/app/apikey")
+        print("❌ Please set GEMINI_API_KEY environment variable")
     else:
         print("✅ Gemini API configured")
+        print("💾 Using in-memory processing (no file system)")
 
-    print("🚀 Starting Flask server...")
-    print("📝 Server will be available at: http://localhost:5000")
-    print("🔧 Tips for YouTube bot detection issues:")
-    print("   - Place a 'cookies.txt' file in this directory for best results")
-    print("   - The system will try multiple extraction strategies automatically")
-    print("   - Try educational or public videos if others fail")
-    print("   - System will attempt to use browser cookies as fallback")
-    
-    # Check for cookies file
-    if os.path.exists('cookies.txt'):
-        print("✅ Found cookies.txt file - should help with bot detection")
-    else:
-        print("⚠️  No cookies.txt found - may encounter bot detection issues")
-        print("💡 To create cookies.txt:")
-        print("   1. Install 'Get cookies.txt LOCALLY' browser extension")
-        print("   2. Visit YouTube while logged in")
-        print("   3. Export cookies to 'cookies.txt' in this directory")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
-
-# Installation requirements:
-# pip install flask flask-cors yt-dlp google-generativeai python-dotenv
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
